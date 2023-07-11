@@ -21,7 +21,11 @@
 #define HW_60_75_CORE_H_
 
 #ifdef HW_60_75_IS_MK2
+#ifdef HW_60_75_IS_MOOEVO
+#define HW_NAME					"60_75_MK2_MOOEVO"
+#else
 #define HW_NAME					"60_75_MK2"
+#endif
 #else
 #define HW_NAME					"60_75"
 #endif

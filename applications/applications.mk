@@ -6,6 +6,8 @@ APPSRC =	applications/app.c \
 			applications/app_nunchuk.c \
 			applications/app_balance.c \
 			applications/app_pas.c \
-			applications/app_custom.c
+			applications/app_custom.c \
+			applications/equus_model.c \
+			applications/mooevo_pid.c
 
 APPINC = applications
