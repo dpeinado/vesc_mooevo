@@ -29,6 +29,7 @@
   It has to be used with new hardware: 60_mooevo
  */
 
+//#include "hwconf/mooevo/hw_60_mooevo.h" // only for eclipse
 #include "app_URBAN_DISPLAY.h"
 
 #include "app.h"
