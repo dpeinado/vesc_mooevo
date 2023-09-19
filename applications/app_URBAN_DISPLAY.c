@@ -79,7 +79,7 @@ tipo_estado_vehiculo miEstado = {1, false, 0, 0};
 
 
 tipo_estado_vehiculo * get_estado_vehiculo(void){
-  return &miEstado;
+  return (&miEstado);
 }
 
 float get_erpm_from_kph(float kmph){

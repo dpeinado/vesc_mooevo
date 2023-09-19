@@ -85,10 +85,12 @@
 //#include "er/app_erockit_conf_v2.h"
 //#include "finn/app_finn_az_conf.h"
 
-#define APP_CUSTOM_TO_USE	"app_URBAN_DISPLAY.c"
+//#define APP_CUSTOM_TO_USE	"app_URBAN_DISPLAY.c"
 //#define APP_CUSTOM_TO_USE	"app_URBAN_2BTN.c"
 //#define APP_CUSTOM_TO_USE	"app_equus_NP1.c"
 //#define APP_CUSTOM_TO_USE	"app_CLEAN_HM.c"
+
+#define APP_CUSTOM_TO_USE 	"app_0_Mooevo.c"
 
 #include "hw.h"
 #include "mcconf_default.h"

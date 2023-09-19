@@ -28,7 +28,8 @@
 #include "utils.h"
 #include <math.h>
 #include <string.h>
-#include "../../applications/app_URBAN_DISPLAY.h"
+//#include "../../applications/app_URBAN_DISPLAY.h"
+#include "../../applications/app_0_Mooevo.h"
 #include "comm_can.h"
 #include "datatypes.h"
 
@@ -47,7 +48,8 @@ typedef struct {
 } mooevo_serial_buffer_t;
 
 
-tipo_estado_vehiculo *estado_vehiculo;
+//tipo_estado_vehiculo *estado_vehiculo;
+DisplayCommParameters *miCommParameters;
 
 static volatile bool mooevo_display_thread_is_running = false;
 static volatile bool mooevo_display_uart_is_running = false;
@@ -72,7 +74,8 @@ static void mooevo_serial_display_byte_process(unsigned char byte);
 static void mooevo_serial_display_check_rx(void);
 
 void mooevo_display_serial_start(void) {
-  estado_vehiculo = get_estado_vehiculo();
+  //estado_vehiculo = get_estado_vehiculo();
+  miCommParameters = get_display_parameters();
   if (!mooevo_display_thread_is_running) {
       chThdCreateStatic(mooevo_display_process_thread_wa, sizeof(mooevo_display_process_thread_wa),
               NORMALPRIO, mooevo_display_process_thread, NULL);
@@ -123,16 +126,16 @@ static void mooevo_serial_display_byte_process(unsigned char byte) {
         if(checksum_addr <= serial_buffer.wr_ptr) {	//check the checksum has been received
           // check sum
           if( serial_buffer.data[checksum_addr] == mooevo_checksum(serial_buffer.data + rd_ptr + 1, 3) ) {
-            estado_vehiculo->modo = (serial_buffer.data[rd_ptr+1] >> 4) & 0xFF;
-            estado_vehiculo->reversa = (serial_buffer.data[rd_ptr+3] & 0x01);
+        	miCommParameters->modo = (serial_buffer.data[rd_ptr+1] >> 4) & 0xFF;
+        	miCommParameters->reversa = (serial_buffer.data[rd_ptr+3] & 0x01);
             serial_buffer.rd_ptr = rd_ptr + 4;	//mark bytes as read
-            // enviar paquete al display con info de estado_Vehiculo
+            // enviar paquete al display con info de miCommParameters
             serial_buffer.tx[0] = CMD_HEAD;
             serial_buffer.tx[1] = 0x00; // error de momento no env�o errores
-            serial_buffer.tx[2] = estado_vehiculo->velocidad & 0xFF;
-            serial_buffer.tx[3] = estado_vehiculo->velocidad >> 8;
+            serial_buffer.tx[2] = miCommParameters->velocidad & 0xFF;
+            serial_buffer.tx[3] = miCommParameters->velocidad >> 8;
             serial_buffer.tx[4] = 100;
-            serial_buffer.tx[5] = estado_vehiculo->intensidad*68.0/120.0;
+            serial_buffer.tx[5] = miCommParameters->intensidad*68.0/120.0;
             serial_buffer.tx[6] = mooevo_checksum(serial_buffer.tx+1, MAX_TXBUFF-2);
             mooevo_serial_send_packet(serial_buffer.tx, MAX_TXBUFF);
           }

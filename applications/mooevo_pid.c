@@ -78,7 +78,7 @@ float compute_PID_antiWindup(PID_Type *mpid, float input) {
   mpid->last_input = input;
   float output = mpid->p_term+mpid->i_term+mpid->d_term;
   utils_truncate_number(&output, -1.0, 1.0);
-  return output;
+  return (output);
 }
 
 float compute_PID_antiSaturation(PID_Type *mpid, float input){
@@ -96,7 +96,7 @@ float compute_PID_antiSaturation(PID_Type *mpid, float input){
   utils_truncate_number_abs(&output, 1.0);
   float output_saturation = output - pre_output;
   mpid->i_term += error*mpid->ki*mpid->dt*0.050+output_saturation;
-  return output;
+  return (output);
 }
 
 
@@ -111,5 +111,5 @@ float compute_PID(PID_Type *mpid, float input, float dt){
     output=compute_PID_antiSaturation(mpid, input);
   output = (output+1.0)/2.0*(mpid->max_value-mpid->min_value)+mpid->min_value;
   mpid->output = output;
-  return output;
+  return (output);
 }
