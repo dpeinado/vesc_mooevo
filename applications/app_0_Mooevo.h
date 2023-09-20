@@ -20,18 +20,18 @@
 
 
 typedef struct {
+	float hertz;
+	systime_t loop_time;
 	systime_t current_time;
 	systime_t last_time;
 	systime_t diff_time;
 	systime_t loop_overshoot;
-	systime_t loop_time;
 	systime_t brake_timeout;
 	uint16_t loop_time_filter;
-	float startup_step_size;
 	float filtered_loop_overshoot;
 	float loop_overshoot_alpha;
 	float filtered_diff_time;
-	float motor_timeout;
+	float dt;
 } LoopManagerType;
 
 typedef enum {
@@ -118,7 +118,7 @@ typedef struct {
 	  float erpmM_andando;      // maximas erpm andando
 	  float erpmM_tortuga;     // maximas erpm como vehiculo tortuga
 	  float erpmM_conejo;     // maximas erpm como vehiculo conejo
-	  float erpmM_marcha_atras;     // multiplicador de erpmM_vehiculo para modo intermedio entre 0 y 1
+	  float erpmM_m_atras;     // multiplicador de erpmM_vehiculo para modo intermedio entre 0 y 1
 	  float max_omega;          // maximo valor de la aceleracion angular
 	  float omega_cut;          // cuando empieza a recortar aceleracion
 	  float k_filter;           // valor filtro para aceleracion (0 superfiltrado 1 sin filtrar)

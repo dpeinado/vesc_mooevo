@@ -49,7 +49,7 @@ typedef struct {
 
 
 //tipo_estado_vehiculo *estado_vehiculo;
-DisplayCommParameters *miCommParameters;
+volatile DisplayCommParameters *miCommParameters;
 
 static volatile bool mooevo_display_thread_is_running = false;
 static volatile bool mooevo_display_uart_is_running = false;
