@@ -28,12 +28,17 @@
 #include "mooevo_pid.h"
 #include "app_0_Mooevo.h"
 
+#define MAX_CAN_AGE								0.1
+#define MIN_MS_WITHOUT_POWER			500
+#define FILTER_SAMPLES								5
+#define RPM_FILTER_SAMPLES					8
+
 // Threads
 static THD_FUNCTION(mooevoThread, arg);
 static THD_WORKING_AREA(mooevoThread_wa, 1024);
 
 // Private functions
-static void terminal_test(int argc, const char **argv);
+static void getLoopTimes(int argc, const char **argv);
 
 // Private variables
 static volatile bool stop_now = true;
@@ -61,22 +66,14 @@ float get_kph_from_erpm(float miErpm){
   return (miErpm*(3.6*mc_conf->si_wheel_diameter*M_PI)/(30.0*mc_conf->si_motor_poles*mc_conf->si_gear_ratio));
 }
 
+// Utility function to reset motor state
 void resetMotor(volatile MotorParam *miMotor){
 	miMotor->current = miMotor->erpm = miMotor->erpm_filtered = miMotor->erpm_last = 0;
 }
 
-void setLoopVariables(void){
-	miLoop.current_time = chVTGetSystemTimeX();
-	  if(miLoop.last_time == 0){
-		  miLoop.last_time = miLoop.current_time;
-	  }
-	  miLoop.diff_time = miLoop.current_time - miLoop.last_time;
-	  miLoop.filtered_diff_time = 0.03 * miLoop.diff_time + 0.97 * miLoop.filtered_diff_time; // Purely a metric
-	  miLoop.last_time = miLoop.current_time;
-	  if(miLoop.loop_time_filter > 0){
-		  miLoop.loop_overshoot = miLoop.diff_time - (miLoop.loop_time - roundf(miLoop.filtered_loop_overshoot));
-		  miLoop.filtered_loop_overshoot = miLoop.loop_overshoot_alpha * miLoop.loop_overshoot + (1-miLoop.loop_overshoot_alpha)*miLoop.filtered_loop_overshoot;
-	  }
+void resetFrenos(VehicleParameters *misParam){
+	reset_PID( &(misParam->frenoMaster));
+	reset_PID(&(misParam->frenoSlave));
 }
 
 void app_custom_configure(app_configuration *conf) {
@@ -121,9 +118,11 @@ void app_custom_configure(app_configuration *conf) {
 	miEstado.tipoVehiculo = miVehiculo.tipoVehiculo;
 	miEstado.modoVehiculo = Sin_limites;
 	miEstado.estadoHombreMuerto = HM_FREE;
+	miEstado.ms_without_power = 0;
 	miEstado.pwr = 0;
 	miEstado.reversa = false;
 	miEstado.freno = false;
+	miEstado.sensorHombreMuerto = false;
 	miEstado.max_rpm_conf = miVehiculo.erpmM_25kph;
 	miEstado.min_rpm_conf = - miVehiculo.erpmM_25kph;
 	/*
@@ -158,16 +157,16 @@ void app_custom_start(void) {
 
 	// Terminal commands for the VESC Tool terminal can be registered.
 	terminal_register_command_callback(
-			"custom_cmd",
-			"Print the number d",
-			"[d]",
-			terminal_test);
+			"get_loop",
+			"Print the Loop Time, and Sleep Time",
+			"",
+			getLoopTimes);
 }
 
 // Called when the custom application is stopped. Stop our threads
 // and release callbacks.
 void app_custom_stop(void) {
-	terminal_unregister_callback(terminal_test);
+	terminal_unregister_callback(getLoopTimes);
 	stop_now = true;
 	while (is_running) {
 		chThdSleepMilliseconds(1);
@@ -175,30 +174,204 @@ void app_custom_stop(void) {
 	commands_printf("Realizado app_custom_STOP");
 }
 
+void setLoopVariables(void){
+	// set current time, last time, diff time, overshoot compensation, etc.
+	miLoop.current_time = chVTGetSystemTimeX();
+	  if(miLoop.last_time == 0){
+		  miLoop.last_time = miLoop.current_time;
+	  }
+	  miLoop.diff_time = miLoop.current_time - miLoop.last_time;
+	  miLoop.filtered_diff_time = 0.03 * miLoop.diff_time + 0.97 * miLoop.filtered_diff_time; // Purely a metric
+	  miLoop.last_time = miLoop.current_time;
+	  if(miLoop.loop_time_filter > 0){
+		  miLoop.loop_overshoot = miLoop.diff_time - (miLoop.loop_time - roundf(miLoop.filtered_loop_overshoot));
+		  miLoop.filtered_loop_overshoot = miLoop.loop_overshoot_alpha * miLoop.loop_overshoot + (1-miLoop.loop_overshoot_alpha)*miLoop.filtered_loop_overshoot;
+	  }
+	  miLoop.dt = ST2S(miLoop.diff_time);
+}
+
+static void updateExternalVariables(void){
+	// For safe start when fault codes occur
+	if (mc_interface_get_fault() != FAULT_CODE_NONE && AppConf->app_adc_conf.safe_start != SAFE_START_NO_FAULT) {
+		miEstado.ms_without_power = 0;
+	}
+	// State parameters coming from Display
+	miEstado.reversa = miDisplayComm.reversa;
+
+	// State parameters coming from external devices
+	// Throttle
+	miEstado.pwr = ADC_VOLTS(ADC_IND_EXT);
+	// Brake. The HW has a pulldown in this analog input to use a switch
+	miEstado.freno = (ADC_VOLTS(ADC_IND_EXT2)>=0.5) ? true : false;
+	// Dead Man. The HW as a pulldown in this analog input to use a switch
+	miEstado.estadoHombreMuerto = (ADC_VOLTS(ADC_IND_HM)>=0.5) ? true : false;
+}
+static void updateInternalVariables(void){
+	misParametros.motorMaster.erpm_last = misParametros.motorMaster.erpm;
+	misParametros.motorSlave.erpm_last = misParametros.motorSlave.erpm;
+	misParametros.motorMaster.erpm = mc_interface_get_rpm();
+	for (int i=0; i < CAN_STATUS_MSGS_TO_STORE; i++){
+		can_status_msg *msg = comm_can_get_status_msg_index(i);
+		if (msg->id >= 0 && UTILS_AGE_S(msg->rx_time) < MAX_CAN_AGE){
+			misParametros.motorSlave.erpm = msg->rpm;
+		}
+	}
+    UTILS_LP_MOVING_AVG_APPROX(
+    		misParametros.motorMaster.erpm_filtered,
+    		misParametros.motorMaster.erpm,
+			RPM_FILTER_SAMPLES);
+    UTILS_LP_MOVING_AVG_APPROX(
+    		misParametros.motorSlave.erpm_filtered,
+    		misParametros.motorSlave.erpm,
+    		RPM_FILTER_SAMPLES);
+    misParametros.rpm_avg_last = misParametros.rpm_avg;
+    misParametros.motorMaster.erpm = misParametros.motorMaster.erpm_filtered;
+    misParametros.motorSlave.erpm = misParametros.motorSlave.erpm_filtered;
+    misParametros.rpm_avg = 0.5*(misParametros.motorMaster.erpm+misParametros.motorSlave.erpm);
+    static float omega_filtered = 0.0;
+    misParametros.omega = misParametros.rpm_avg - misParametros.rpm_avg_last;
+    UTILS_LP_FAST(omega_filtered, misParametros.omega, miVehiculo.k_filter);
+    misParametros.omega = omega_filtered;
+
+    misParametros.abs_max_rpm = (fabsf(misParametros.motorMaster.erpm) > fabsf(misParametros.motorSlave.erpm)) ?
+    		fabsf(misParametros.motorMaster.erpm) : fabsf(misParametros.motorSlave.erpm);
+    miDisplayComm.velocidad = 10*get_kph_from_erpm(misParametros.rpm_avg);
+
+}
+
+
+
+static void stateTransition(void){
+	if (!miEstado.sensorHombreMuerto) {
+		if( (miEstado.tipoVehiculo == Walker_Clean) ||
+				(miEstado.tipoVehiculo==Carro_26 && miEstado.modoVehiculo==Andarin)){
+			switch(miEstado.estadoHombreMuerto){
+			case HM_FREE:
+				miEstado.estadoHombreMuerto = HM_BRAKING;
+				misParametros.timeout = miLoop.current_time + S2ST(miVehiculo.brake_timeout);
+				break;
+			case HM_BRAKING:
+				if (miLoop.current_time > misParametros.timeout){
+					if (misParametros.abs_max_rpm >= miVehiculo.min_rpm){
+						miEstado.estadoHombreMuerto = HM_CONTROL_PID;
+					} else {
+						miEstado.estadoHombreMuerto = HM_STOPPED;
+						resetFrenos((VehicleParameters *)&misParametros);
+					}
+				} else {
+					if (misParametros.abs_max_rpm < miVehiculo.min_rpm){
+						miEstado.estadoHombreMuerto = HM_STOPPED;
+						resetFrenos((VehicleParameters *)&misParametros);
+					}
+				}
+				break;
+			case HM_STOPPED:
+				if (misParametros.abs_max_rpm > miVehiculo.min_rpm){
+					miEstado.estadoHombreMuerto = HM_CONTROL_PID;
+				}
+				break;
+			case HM_CONTROL_PID:
+				if (misParametros.abs_max_rpm <  miVehiculo.min_rpm && misParametros.current_max < miVehiculo.min_curr){
+					miEstado.estadoHombreMuerto = HM_STOPPED;
+					resetFrenos((VehicleParameters *)&misParametros);
+				}
+				break;
+			}
+		} else {
+			miEstado.estadoHombreMuerto = HM_FREE;
+		}
+	} else {
+		switch(miEstado.tipoVehiculo){
+		case Vehiculo_sin_limites:
+		case Vehiculo_a_25kph:
+			miEstado.modoVehiculo = Sin_limites;
+			miDisplayComm.modo = miEstado.tipoVehiculo;
+			break;
+		case Walker_Clean:
+			miEstado.modoVehiculo = Andarin;
+			miDisplayComm.modo = miEstado.tipoVehiculo;
+			break;
+		case Carro_26:
+		case Yawer:
+			miEstado.modoVehiculo = miDisplayComm.modo;
+			break;
+		}
+
+		if (miEstado.reversa){
+			switch(miEstado.tipoVehiculo){
+			case Vehiculo_sin_limites:
+			case Vehiculo_a_25kph:
+			case Walker_Clean:
+				miEstado.max_rpm_conf = 0;
+				miEstado.min_rpm_conf = 0;
+				break;
+			case Carro_26:
+			case Yawer:
+				if (miEstado.modoVehiculo >= Vehiculo_tortuga){
+					miEstado.max_rpm_conf = 0;
+					miEstado.min_rpm_conf = - miVehiculo.erpmM_m_atras;
+				}
+			}
+		} else {
+			miEstado.min_rpm_conf = 0;
+			switch(miEstado.tipoVehiculo){
+			case Vehiculo_sin_limites:
+				miEstado.max_rpm_conf = 100000;
+				break;
+			case Vehiculo_a_25kph:
+				miEstado.max_rpm_conf = miVehiculo.erpmM_25kph;
+				break;
+			case Walker_Clean:
+				miEstado.max_rpm_conf = miVehiculo.erpmM_andando;
+				break;
+			case Carro_26:
+			case Yawer:
+				switch(miEstado.modoVehiculo){
+				case Sin_limites:
+					miEstado.max_rpm_conf = 0;
+					break;
+				case Andarin:
+					miEstado.max_rpm_conf = miVehiculo.erpmM_andando;
+					break;
+				case Vehiculo_tortuga:
+					miEstado.max_rpm_conf = miVehiculo.erpmM_tortuga;
+					break;
+				case Vehiculo_conejo:
+					miEstado.max_rpm_conf = miVehiculo.erpmM_conejo;
+					break;
+				}
+			}
+		}
+	}
+}
+
+static void driveVehicule(void){
+
+}
 static THD_FUNCTION(mooevoThread, arg) {
 	(void)arg;
 	chRegSetThreadName("APP MOOEVO MONOLITHIC");
 	while (!chThdShouldTerminateX()) {
 	      timeout_reset();
 	      setLoopVariables();
-
+	      timeout_reset();
+	      updateExternalVariables();
+	      timeout_reset();
+	      updateInternalVariables();
+	      timeout_reset();
+	      stateTransition();
+	      timeout_reset();
+	      driveVehicule();
+	      timeout_reset();
 	      chThdSleep(miLoop.loop_time - roundf(miLoop.filtered_loop_overshoot));
 	    }
-
 }
 
 // Callback function for the terminal command with arguments.
-static void terminal_test(int argc, const char **argv) {
-	if (argc == 2) {
-		int d = -1;
-		sscanf(argv[1], "%d", &d);
-
-		commands_printf("You have entered %d", d);
-
-		// For example, read the ADC inputs on the COMM header.
-		commands_printf("ADC1: %.2f V ADC2: %.2f V",
-				(double)ADC_VOLTS(ADC_IND_EXT), (double)ADC_VOLTS(ADC_IND_EXT2));
-	} else {
-		commands_printf("This command requires one argument.\n");
-	}
+static void getLoopTimes(int argc, const char **argv) {
+	  (void)argc;
+	  (void)argv;
+	  float diff = miLoop.diff_time;
+	  float sleep_time = miLoop.loop_time - roundf(miLoop.filtered_loop_overshoot);
+	  commands_printf("\n%f\t%f", (double)diff, (double)sleep_time);
 }

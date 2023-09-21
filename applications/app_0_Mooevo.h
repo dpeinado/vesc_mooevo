@@ -78,12 +78,14 @@ typedef struct {
 	VehicleType tipoVehiculo;
 	VehicleMode modoVehiculo;
 	HombreMuertoState estadoHombreMuerto;
+	float ms_without_power;
 	float pwr;
 	bool reversa;
 	bool freno;
+	bool sensorHombreMuerto;
 	float max_rpm_conf;
 	float min_rpm_conf;
-} VehicleState;
+} VehicleState; //miEstado
 
 /*
  * paquete de datos intercambiado con el display. se selecciona el modo de vehículo, la marcha atrás, se muestra velocidad e intensidad
@@ -93,7 +95,7 @@ typedef struct {
   bool      	reversa; // marcha atrás o no
   uint16_t  	velocidad; // velocidad multiplicado por 10, ejemplo 16.4 kmph -> 164
   uint16_t  	intensidad; // intensidad multiplicada por 10, ejemplo 2,67 -> 27 // 28.5 -> 285
-} DisplayCommParameters;
+} DisplayCommParameters; //miDisplayComm
 
 typedef struct {
 	float erpm;
@@ -108,9 +110,12 @@ typedef struct {
 	MotorParam motorSlave;
 	PID_Type frenoMaster;
 	PID_Type frenoSlave;
-	float current_max;
+	float rpm_avg;
+	float rpm_avg_last;
+	float omega;
 	float abs_max_rpm;
-} VehicleParameters;
+	float current_max;
+} VehicleParameters; //misParametros
 
 typedef struct {
 	VehicleType tipoVehiculo;
@@ -126,7 +131,7 @@ typedef struct {
 	  float min_rpm;		// valor revoluciones mínimas para parar el control pid del hm
 	  float brake_current;
 	  float brake_timeout;
-}VehicleConfiguration;
+}VehicleConfiguration;  //miVehiculo
 
 
 

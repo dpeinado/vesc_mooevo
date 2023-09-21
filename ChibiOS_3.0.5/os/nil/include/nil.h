@@ -637,6 +637,45 @@ struct nil_system {
 /** @} */
 
 /**
+ * @brief   System ticks to seconds.
+ * @details Converts from system ticks number to seconds.
+ * @note    The result is rounded up to the next second boundary.
+ *
+ * @param[in] n         number of system ticks
+ * @return              The number of seconds.
+ *
+ * @api
+ */
+#define ST2S(n) ((((n) - 1UL) / CH_CFG_ST_FREQUENCY) + 1UL)
+
+/**
+ * @brief   System ticks to milliseconds.
+ * @details Converts from system ticks number to milliseconds.
+ * @note    The result is rounded up to the next millisecond boundary.
+ *
+ * @param[in] n         number of system ticks
+ * @return              The number of milliseconds.
+ *
+ * @api
+ */
+#define ST2MS(n) ((((n) - 1UL) / (CH_CFG_ST_FREQUENCY / 1000UL)) + 1UL)
+
+/**
+ * @brief   System ticks to microseconds.
+ * @details Converts from system ticks number to microseconds.
+ * @note    The result is rounded up to the next microsecond boundary.
+ *
+ * @param[in] n         number of system ticks
+ * @return              The number of microseconds.
+ *
+ * @api
+ */
+#define ST2US(n) ((((n) - 1UL) / (CH_CFG_ST_FREQUENCY / 1000000UL)) + 1UL)
+/** @} */
+
+
+
+/**
  * @name    Time conversion utilities for the realtime counter
  * @{
  */
