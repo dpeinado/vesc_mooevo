@@ -375,9 +375,9 @@ static void stateTransition(void){
 	}
 }
 
-volatile float getPWR(float input_pwr){
+float getPWR(float input_pwr){
 	float pwr = input_pwr;
-	float filter_val;
+	float filter_val = 0;
 	if (miEstado.freno) {
 		return (0);
 	}
@@ -437,63 +437,105 @@ volatile float getPWR(float input_pwr){
 	return (pwr);
 }
 
-static void driveVehicule(void){
-	if (miEstado.estadoHombreMuerto == HM_FREE) {
-		float miPwr = getPWR(miEstado.pwr);
-		float lo_max_rpm = 0.0;
-		float lo_min_rpm = 0.0;
-        // aplico los máximos a la corriente de salida en función de los límites de velocidad del modo seleccionado
-        if (misParametros.rpm_avg >= 0) {
-          const float rpm_pos_cut_start = miEstado.max_rpm_conf * mc_conf->l_erpm_start;
-          const float rpm_pos_cut_end = miEstado.max_rpm_conf;
-          if (misParametros.rpm_avg < (rpm_pos_cut_start + 0.1)) {
-              lo_max_rpm = miPwr;
-          } else if (misParametros.rpm_avg > (rpm_pos_cut_end - 0.1)) {
-              lo_max_rpm = 0.0;
-          } else {
-              lo_max_rpm = utils_map(misParametros.rpm_avg, rpm_pos_cut_start, rpm_pos_cut_end, miPwr, 0.0);
-          }
-          miPwr = lo_max_rpm;
-        } else {
-          const float rpm_neg_cut_start = miEstado.min_rpm_conf * mc_conf->l_erpm_start;
-          const float rpm_neg_cut_end = miEstado.min_rpm_conf;
-          if (misParametros.rpm_avg > (rpm_neg_cut_start - 0.1)) {
-              lo_min_rpm = miPwr;
-          } else if (misParametros.rpm_avg < (rpm_neg_cut_end + 0.1)) {
-              lo_min_rpm = 0.0;
-          } else {
-              lo_min_rpm = utils_map(misParametros.rpm_avg, rpm_neg_cut_start, rpm_neg_cut_end, miPwr, 0.0);
-          }
-          miPwr = lo_min_rpm;
-        }
-
-        // controlo que la aceleración no supere un valor máximo
-	   if (misParametros.omega >= 0){
-		 if (misParametros.omega < (miVehiculo.omega_cut)){
-		   lo_max_rpm = miPwr;
-		 } else if (misParametros.omega > miVehiculo.max_omega){
-		   lo_max_rpm = 0.0;
-		 } else {
-		   lo_max_rpm = utils_map(misParametros.omega, miVehiculo.omega_cut, miVehiculo.max_omega, miPwr, 0.0);
-		 }
-		 miPwr = lo_max_rpm;
-	   } // En principio no hay límite a la máxima deceleración
-
-	   for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-		   can_status_msg *msg = comm_can_get_status_msg_index(i);
-		   if (msg->id >= 0 && UTILS_AGE_S(msg->rx_time) < MAX_CAN_AGE) {
-			 comm_can_set_current_rel(msg->id, miPwr);
-		   }
-	   }
-	   misParametros.motorMaster.current = miPwr;
-	   misParametros.motorSlave.current = miPwr;
-	   misParametros.current_max = miPwr;
-	   miDisplayComm.intensidad = 10*miPwr*mc_conf->lo_current_motor_max_now;
-	   mc_interface_set_current_rel(miPwr);
-	} else {
-
+void set_curr_rel_both_brakes(float rel_curr){
+	mc_interface_set_brake_current_rel(rel_curr);
+	for (int i=0; i < CAN_STATUS_MSGS_TO_STORE; i++){
+		can_status_msg *msg = comm_can_get_status_msg_index(i);
+		if (msg->id >= 0 && UTILS_AGE_S(msg->rx_time) < MAX_CAN_AGE){
+			comm_can_set_current_brake_rel(msg->id,  rel_curr);
+		}
 	}
 }
+
+void set_curr_rel_both_motors(float rel_curr1, float rel_curr2){
+	mc_interface_set_current_rel(rel_curr1);
+	for (int i=0; i < CAN_STATUS_MSGS_TO_STORE; i++){
+		can_status_msg *msg = comm_can_get_status_msg_index(i);
+		if (msg->id >= 0 && UTILS_AGE_S(msg->rx_time) < MAX_CAN_AGE){
+			comm_can_set_current_rel(msg->id,  rel_curr2);
+		}
+	}
+}
+
+static void driveVehicule(void){
+	switch(miEstado.estadoHombreMuerto){
+		case HM_FREE: {
+			float miPwr = getPWR(miEstado.pwr);
+			float lo_max_rpm = 0.0;
+			float lo_min_rpm = 0.0;
+			// aplico los máximos a la corriente de salida en función de los límites de velocidad del modo seleccionado
+			if (misParametros.rpm_avg >= 0) {
+			  const float rpm_pos_cut_start = miEstado.max_rpm_conf * mc_conf->l_erpm_start;
+			  const float rpm_pos_cut_end = miEstado.max_rpm_conf;
+			  if (misParametros.rpm_avg < (rpm_pos_cut_start + 0.1)) {
+				  lo_max_rpm = miPwr;
+			  } else if (misParametros.rpm_avg > (rpm_pos_cut_end - 0.1)) {
+				  lo_max_rpm = 0.0;
+			  } else {
+				  lo_max_rpm = utils_map(misParametros.rpm_avg, rpm_pos_cut_start, rpm_pos_cut_end, miPwr, 0.0);
+			  }
+			  miPwr = lo_max_rpm;
+			} else {
+			  const float rpm_neg_cut_start = miEstado.min_rpm_conf * mc_conf->l_erpm_start;
+			  const float rpm_neg_cut_end = miEstado.min_rpm_conf;
+			  if (misParametros.rpm_avg > (rpm_neg_cut_start - 0.1)) {
+				  lo_min_rpm = miPwr;
+			  } else if (misParametros.rpm_avg < (rpm_neg_cut_end + 0.1)) {
+				  lo_min_rpm = 0.0;
+			  } else {
+				  lo_min_rpm = utils_map(misParametros.rpm_avg, rpm_neg_cut_start, rpm_neg_cut_end, miPwr, 0.0);
+			  }
+			  miPwr = lo_min_rpm;
+			}
+
+			// controlo que la aceleración no supere un valor máximo
+		   if (misParametros.omega >= 0){
+			 if (misParametros.omega < (miVehiculo.omega_cut)){
+			   lo_max_rpm = miPwr;
+			 } else if (misParametros.omega > miVehiculo.max_omega){
+			   lo_max_rpm = 0.0;
+			 } else {
+			   lo_max_rpm = utils_map(misParametros.omega, miVehiculo.omega_cut, miVehiculo.max_omega, miPwr, 0.0);
+			 }
+			 miPwr = lo_max_rpm;
+		   } // En principio no hay límite a la máxima deceleración
+
+		   for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
+			   can_status_msg *msg = comm_can_get_status_msg_index(i);
+			   if (msg->id >= 0 && UTILS_AGE_S(msg->rx_time) < MAX_CAN_AGE) {
+				 comm_can_set_current_rel(msg->id, miPwr);
+			   }
+		   }
+		   misParametros.motorMaster.current = miPwr;
+		   misParametros.motorSlave.current = miPwr;
+		   misParametros.current_max = miPwr;
+		   miDisplayComm.intensidad = 10*miPwr*mc_conf->lo_current_motor_max_now;
+		   mc_interface_set_current_rel(miPwr);
+		   break;
+		}
+		case HM_BRAKING:
+			set_curr_rel_both_brakes(miVehiculo.brake_current );
+			timeout_reset();
+			break;
+		case HM_STOPPED:
+			break;
+		case HM_CONTROL_PID:
+			misParametros.motorMaster.current = compute_PID(
+					(PID_Type *)&(misParametros.frenoMaster),
+					misParametros.motorMaster.erpm,
+					miLoop.dt);
+			misParametros.motorSlave.current = compute_PID(
+					(PID_Type *)&(misParametros.frenoSlave),
+								misParametros.motorSlave.erpm,
+								miLoop.dt);
+			misParametros.current_max = ( fabsf(misParametros.motorMaster.current)> \
+					fabsf(misParametros.motorSlave.current)) ? \
+							fabsf(misParametros.motorMaster.current) : fabsf(misParametros.motorSlave.current);
+			set_curr_rel_both_motors(misParametros.motorMaster.current, misParametros.motorSlave.current);
+			break;
+	}
+}
+
 static THD_FUNCTION(mooevoThread, arg) {
 	(void)arg;
 	chRegSetThreadName("APP MOOEVO MONOLITHIC");
