@@ -5,6 +5,11 @@
  *      Author: Diego Peinado Martín
  */
 
+/*!
+ *  \brief Módulo que contiene el FW monolítico de Mooevo, a excepción del módulo de cálculo de los
+ *  PIDs, y de la definición del HW necesario para las comunicaciones con el Display
+ */
+
 #include "app.h"
 #include "ch.h"
 #include "hal.h"
@@ -32,6 +37,8 @@
 #define MIN_MS_WITHOUT_POWER			500
 #define FILTER_SAMPLES								5
 #define RPM_FILTER_SAMPLES					8
+#define TRUE_LEVEL_ADC							0.5
+#define ERPM_INFINITE								100000
 
 // Threads
 static THD_FUNCTION(mooevoThread, arg);
@@ -50,32 +57,52 @@ static volatile VehicleState miEstado;
 static volatile VehicleParameters misParametros;
 volatile DisplayCommParameters miDisplayComm = {0, false, 0, 0};
 static volatile LoopManagerType miLoop;
+static volatile mc_fault_code miErrorCode;
 
 
-// Communications with "Mooevo serial display" Thread
+/*!
+ * \brief Communications with "Mooevo serial display" Thread
+ */
 DisplayCommParameters * get_display_parameters(void){
-  return (DisplayCommParameters *)(&miDisplayComm);
+  return ((DisplayCommParameters *)(&miDisplayComm));
 }
 
-// Utility function to convert from erpm to kph, or kph to erpm.
+/*!
+ * \brief Utility function to convert from erpm to kph..
+ */
 float get_erpm_from_kph(float kmph){
   return (kmph/(3.6*mc_conf->si_wheel_diameter*M_PI)*(30.0*mc_conf->si_motor_poles*mc_conf->si_gear_ratio));
 }
-
+/*!
+ * \brief Utility function to convert from kph to erpm.
+ */
 float get_kph_from_erpm(float miErpm){
   return (miErpm*(3.6*mc_conf->si_wheel_diameter*M_PI)/(30.0*mc_conf->si_motor_poles*mc_conf->si_gear_ratio));
 }
 
-// Utility function to reset motor state
+/*!
+ * \brief Utility function to reset motor state
+ */
 void resetMotor(volatile MotorParam *miMotor){
 	miMotor->current = miMotor->erpm = miMotor->erpm_filtered = miMotor->erpm_last = 0;
 }
 
+/*!
+ * \brief Utility function to reset brakes state
+ */
 void resetFrenos(VehicleParameters *misParam){
 	reset_PID( &(misParam->frenoMaster));
 	reset_PID(&(misParam->frenoSlave));
 }
 
+/*!
+ * \brief Configuration of the application
+ *
+ * It gets the pointer to the configuration structure and assigns it to a module variable \c AppConf,
+ * and also gets the master motor configuration and assigns it to a module variable \c mc_conf
+ *
+ * \param app_configuration *conf: pointer to the configuration structure
+ */
 void app_custom_configure(app_configuration *conf) {
 	AppConf = conf;
 	mc_conf = mc_interface_get_configuration();
@@ -107,7 +134,7 @@ void app_custom_configure(app_configuration *conf) {
 	miVehiculo.erpmM_m_atras 	= get_erpm_from_kph(1.5);
 	miVehiculo.max_omega			= AppConf->app_balance_conf.hertz;
 	miVehiculo.k_filter					= AppConf->app_balance_conf.loop_time_filter;
-	miVehiculo.omega_cut			= AppConf->app_balance_conf.ki_limit;
+	miVehiculo.omega_cut			= AppConf->app_balance_conf.ki_limit * miVehiculo.max_omega;
 	miVehiculo.min_curr				= AppConf->app_balance_conf.kd_pt1_highpass_frequency;
 	miVehiculo.min_rpm				= AppConf->app_balance_conf.kd_pt1_lowpass_frequency;
 	miVehiculo.brake_current		= AppConf->app_balance_conf.brake_current;
@@ -195,6 +222,10 @@ static void updateExternalVariables(void){
 	if (mc_interface_get_fault() != FAULT_CODE_NONE && AppConf->app_adc_conf.safe_start != SAFE_START_NO_FAULT) {
 		miEstado.ms_without_power = 0;
 	}
+	miErrorCode = mc_interface_get_fault();
+	if (miErrorCode != FAULT_CODE_NONE){
+		commands_printf("\nERROR: %s", mc_interface_fault_to_string(miErrorCode));
+	}
 	// State parameters coming from Display
 	miEstado.reversa = miDisplayComm.reversa;
 
@@ -202,9 +233,9 @@ static void updateExternalVariables(void){
 	// Throttle
 	miEstado.pwr = ADC_VOLTS(ADC_IND_EXT);
 	// Brake. The HW has a pulldown in this analog input to use a switch
-	miEstado.freno = (ADC_VOLTS(ADC_IND_EXT2)>=0.5) ? true : false;
+	miEstado.freno = (ADC_VOLTS(ADC_IND_EXT2)>=TRUE_LEVEL_ADC) ? true : false;
 	// Dead Man. The HW as a pulldown in this analog input to use a switch
-	miEstado.estadoHombreMuerto = (ADC_VOLTS(ADC_IND_HM)>=0.5) ? true : false;
+	miEstado.estadoHombreMuerto = (ADC_VOLTS(ADC_IND_HM)>=TRUE_LEVEL_ADC) ? true : false;
 }
 static void updateInternalVariables(void){
 	misParametros.motorMaster.erpm_last = misParametros.motorMaster.erpm;
@@ -238,7 +269,6 @@ static void updateInternalVariables(void){
     miDisplayComm.velocidad = 10*get_kph_from_erpm(misParametros.rpm_avg);
 
 }
-
 
 
 static void stateTransition(void){
@@ -345,12 +375,130 @@ static void stateTransition(void){
 	}
 }
 
-static void driveVehicule(void){
+volatile float getPWR(float input_pwr){
+	float pwr = input_pwr;
+	float filter_val;
+	if (miEstado.freno) {
+		return (0);
+	}
+	// se promedian los 5 últimos valores (aproximadamente)
+	UTILS_LP_MOVING_AVG_APPROX(filter_val, pwr, FILTER_SAMPLES);
+	if (AppConf->app_adc_conf.use_filter) {
+		pwr = filter_val;
+	}
+	// se mapea la entrada desde voltios al intervalo 0 - 1
+	pwr = utils_map(pwr, AppConf->app_adc_conf.voltage_start, AppConf->app_adc_conf.voltage_end, 0.0, 1.0);
+	utils_truncate_number(&pwr, 0.0, 1.0);
+	if (AppConf->app_adc_conf.voltage_inverted) {
+		pwr = 1.0 - pwr;
+	}
 
+	// si modo reversa, se invierte la salida
+	if (miEstado.reversa && miEstado.min_rpm_conf) {
+	  pwr = -pwr;
+	  palSetPad(HW_ICU_GPIO, HW_ICU_PIN); // salida alarma marcha atrás
+	} else {
+	  palClearPad(HW_ICU_GPIO, HW_ICU_PIN); // apaga alarma marcha atrás
+	}
+
+	// se aplican la banda muerta y la curva de aceleraci�n/deceleraci�n
+	utils_deadband(&pwr, AppConf->app_adc_conf.hyst, 1.0);
+	pwr = utils_throttle_curve(pwr,
+			AppConf->app_adc_conf.throttle_exp,
+			AppConf->app_adc_conf.throttle_exp_brake,
+			AppConf->app_adc_conf.throttle_exp_mode);
+
+	timeout_reset();
+	static float pwr_ramp = 0.0;
+	float ramp_time = fabsf(pwr) > fabsf(pwr_ramp) ? AppConf->app_adc_conf.ramp_time_pos : AppConf->app_adc_conf.ramp_time_neg;
+
+	if (ramp_time > 0.01) {
+		const float ramp_step = (float)ST2MS(miLoop.diff_time) / (ramp_time * 1000.0);
+		utils_step_towards(&pwr_ramp, pwr, ramp_step);
+		pwr = pwr_ramp;
+	}
+	/*************************************************************/
+
+    // Algoritmo para un arranque seguro
+	if (fabsf(pwr) < 0.001) {
+        miEstado.ms_without_power += (1000.0 * (float)miLoop.diff_time) / (float)CH_CFG_ST_FREQUENCY;
+    }
+	timeout_reset();
+    // If safe start is enabled and the output has not been zero for long enough
+    if (miEstado.ms_without_power < MIN_MS_WITHOUT_POWER && AppConf->app_adc_conf.safe_start) {
+    	static int pulses_without_power_before = 0;
+    	if (miEstado.ms_without_power == pulses_without_power_before) {
+    		miEstado.ms_without_power = 0;
+    	}
+        pulses_without_power_before = miEstado.ms_without_power;
+        pwr = 0;
+        return (0);
+    }
+	return (pwr);
+}
+
+static void driveVehicule(void){
+	if (miEstado.estadoHombreMuerto == HM_FREE) {
+		float miPwr = getPWR(miEstado.pwr);
+		float lo_max_rpm = 0.0;
+		float lo_min_rpm = 0.0;
+        // aplico los máximos a la corriente de salida en función de los límites de velocidad del modo seleccionado
+        if (misParametros.rpm_avg >= 0) {
+          const float rpm_pos_cut_start = miEstado.max_rpm_conf * mc_conf->l_erpm_start;
+          const float rpm_pos_cut_end = miEstado.max_rpm_conf;
+          if (misParametros.rpm_avg < (rpm_pos_cut_start + 0.1)) {
+              lo_max_rpm = miPwr;
+          } else if (misParametros.rpm_avg > (rpm_pos_cut_end - 0.1)) {
+              lo_max_rpm = 0.0;
+          } else {
+              lo_max_rpm = utils_map(misParametros.rpm_avg, rpm_pos_cut_start, rpm_pos_cut_end, miPwr, 0.0);
+          }
+          miPwr = lo_max_rpm;
+        } else {
+          const float rpm_neg_cut_start = miEstado.min_rpm_conf * mc_conf->l_erpm_start;
+          const float rpm_neg_cut_end = miEstado.min_rpm_conf;
+          if (misParametros.rpm_avg > (rpm_neg_cut_start - 0.1)) {
+              lo_min_rpm = miPwr;
+          } else if (misParametros.rpm_avg < (rpm_neg_cut_end + 0.1)) {
+              lo_min_rpm = 0.0;
+          } else {
+              lo_min_rpm = utils_map(misParametros.rpm_avg, rpm_neg_cut_start, rpm_neg_cut_end, miPwr, 0.0);
+          }
+          miPwr = lo_min_rpm;
+        }
+
+        // controlo que la aceleración no supere un valor máximo
+	   if (misParametros.omega >= 0){
+		 if (misParametros.omega < (miVehiculo.omega_cut)){
+		   lo_max_rpm = miPwr;
+		 } else if (misParametros.omega > miVehiculo.max_omega){
+		   lo_max_rpm = 0.0;
+		 } else {
+		   lo_max_rpm = utils_map(misParametros.omega, miVehiculo.omega_cut, miVehiculo.max_omega, miPwr, 0.0);
+		 }
+		 miPwr = lo_max_rpm;
+	   } // En principio no hay límite a la máxima deceleración
+
+	   for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
+		   can_status_msg *msg = comm_can_get_status_msg_index(i);
+		   if (msg->id >= 0 && UTILS_AGE_S(msg->rx_time) < MAX_CAN_AGE) {
+			 comm_can_set_current_rel(msg->id, miPwr);
+		   }
+	   }
+	   misParametros.motorMaster.current = miPwr;
+	   misParametros.motorSlave.current = miPwr;
+	   misParametros.current_max = miPwr;
+	   miDisplayComm.intensidad = 10*miPwr*mc_conf->lo_current_motor_max_now;
+	   mc_interface_set_current_rel(miPwr);
+	} else {
+
+	}
 }
 static THD_FUNCTION(mooevoThread, arg) {
 	(void)arg;
 	chRegSetThreadName("APP MOOEVO MONOLITHIC");
+	// Config output for reverse alarm as an output
+	palSetPadMode(HW_ICU_GPIO, HW_ICU_PIN, PAL_MODE_OUTPUT_PUSHPULL);
 	while (!chThdShouldTerminateX()) {
 	      timeout_reset();
 	      setLoopVariables();
