@@ -8,7 +8,5 @@ APPSRC =	applications/app.c \
 			applications/app_pas.c \
 			applications/app_custom.c \
 			applications/mooevo_pid.c
-#			applications/equus_model.c \
-			
 
 APPINC = applications

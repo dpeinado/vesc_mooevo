@@ -39,6 +39,7 @@
 #define RPM_FILTER_SAMPLES					8
 #define TRUE_LEVEL_ADC							1.5
 #define ERPM_INFINITE								100000
+#define N_RESET_ITERM								50
 
 // Threads
 static THD_FUNCTION(mooevoThread, arg);
@@ -133,9 +134,9 @@ void app_custom_configure(app_configuration *conf) {
 	miVehiculo.erpmM_tortuga   = get_erpm_from_kph(AppConf->app_balance_conf.ki);
 	miVehiculo.erpmM_conejo		= get_erpm_from_kph(AppConf->app_balance_conf.kd);
 	miVehiculo.erpmM_m_atras 	= get_erpm_from_kph(1.5);
-	miVehiculo.max_omega			= AppConf->app_balance_conf.hertz;
-	miVehiculo.k_filter					= AppConf->app_balance_conf.loop_time_filter;
-	miVehiculo.omega_cut			= AppConf->app_balance_conf.ki_limit * miVehiculo.max_omega;
+	miVehiculo.max_omega			= AppConf->app_balance_conf.tiltback_constant_erpm;
+	miVehiculo.k_filter					= AppConf->app_balance_conf.tiltback_constant;
+	miVehiculo.omega_cut			= AppConf->app_balance_conf.tiltback_variable* miVehiculo.max_omega;
 	miVehiculo.min_curr				= AppConf->app_balance_conf.kd_pt1_highpass_frequency/10.0;
 	miVehiculo.min_rpm				= AppConf->app_balance_conf.kd_pt1_lowpass_frequency;
 	miVehiculo.brake_current		= AppConf->app_balance_conf.brake_current;
@@ -302,11 +303,14 @@ static void stateTransition(void){
 			case HM_FREE:
 				miEstado.estadoHombreMuerto = HM_BRAKING;
 				misParametros.timeout = miLoop.current_time + S2ST(miVehiculo.brake_timeout);
+				misParametros.motorMaster.current = 0;
+				misParametros.motorSlave.current = 0;
 				break;
 			case HM_BRAKING:
 				if (miLoop.current_time > misParametros.timeout){
 					if (misParametros.abs_max_rpm >= miVehiculo.min_rpm){
 						miEstado.estadoHombreMuerto = HM_CONTROL_PID;
+						resetFrenos((VehicleParameters *)&misParametros);
 					} else {
 						miEstado.estadoHombreMuerto = HM_STOPPED;
 						resetFrenos((VehicleParameters *)&misParametros);
@@ -321,6 +325,7 @@ static void stateTransition(void){
 			case HM_STOPPED:
 				if (misParametros.abs_max_rpm > miVehiculo.min_rpm){
 					miEstado.estadoHombreMuerto = HM_CONTROL_PID;
+					resetFrenos((VehicleParameters *)&misParametros);
 				}
 				break;
 			case HM_CONTROL_PID:
@@ -332,52 +337,59 @@ static void stateTransition(void){
 			}
 		} else {
 			miEstado.estadoHombreMuerto = HM_FREE;
+			//resetFrenos((VehicleParameters *)&misParametros);
 		}
 	} else {
-		miEstado.estadoHombreMuerto = HM_FREE;
-		if (miEstado.reversa){
-			switch(miEstado.tipoVehiculo){
-			case Vehiculo_sin_limites:
-			case Vehiculo_a_25kph:
-			case Walker_Clean:
-				miEstado.max_rpm_conf = 0;
-				miEstado.min_rpm_conf = 0;
-				break;
-			case Carro_26:
-			case Yawer:
-				if (miEstado.modoVehiculo >= Vehiculo_tortuga){
-					miEstado.max_rpm_conf = 0;
-					miEstado.min_rpm_conf = - miVehiculo.erpmM_m_atras;
-				}
+		if (miEstado.estadoHombreMuerto) {
+			miEstado.estadoHombreMuerto = HM_FREE;
+			resetFrenos((VehicleParameters *)&misParametros);
+			miEstado.ms_without_power = 0;
+			commands_printf("ME RESETEEEOOOO");
+		}
+
+	}
+	if (miEstado.reversa){
+		miEstado.max_rpm_conf = 0;
+		switch(miEstado.tipoVehiculo){
+		case Vehiculo_sin_limites:
+		case Vehiculo_a_25kph:
+		case Walker_Clean:
+			miEstado.min_rpm_conf = 0;
+			break;
+		case Carro_26:
+		case Yawer:
+			if (miEstado.modoVehiculo >= Vehiculo_tortuga){
+				miEstado.min_rpm_conf = - miVehiculo.erpmM_m_atras;
 			}
 		}
-	}
-	miEstado.min_rpm_conf = 0;
-	switch(miEstado.tipoVehiculo){
-	case Vehiculo_sin_limites:
-		miEstado.max_rpm_conf = ERPM_INFINITE;
-		break;
-	case Vehiculo_a_25kph:
-		miEstado.max_rpm_conf = miVehiculo.erpmM_25kph;
-		break;
-	case Walker_Clean:
-		miEstado.max_rpm_conf = miVehiculo.erpmM_andando;
-		break;
-	case Carro_26:
-	case Yawer:
-		switch(miEstado.modoVehiculo){
-		case Sin_limites:
-			miEstado.max_rpm_conf = 0;
+	} else {
+		miEstado.min_rpm_conf = 0;
+		switch(miEstado.tipoVehiculo){
+		case Vehiculo_sin_limites:
+			miEstado.max_rpm_conf = ERPM_INFINITE;
 			break;
-		case Andarin:
+		case Vehiculo_a_25kph:
+			miEstado.max_rpm_conf = miVehiculo.erpmM_25kph;
+			break;
+		case Walker_Clean:
 			miEstado.max_rpm_conf = miVehiculo.erpmM_andando;
 			break;
-		case Vehiculo_tortuga:
-			miEstado.max_rpm_conf = miVehiculo.erpmM_tortuga;
-			break;
-		case Vehiculo_conejo:
-			miEstado.max_rpm_conf = miVehiculo.erpmM_conejo;
-			break;
+		case Carro_26:
+		case Yawer:
+			switch(miEstado.modoVehiculo){
+			case Sin_limites:
+				miEstado.max_rpm_conf = 0;
+				break;
+			case Andarin:
+				miEstado.max_rpm_conf = miVehiculo.erpmM_andando;
+				break;
+			case Vehiculo_tortuga:
+				miEstado.max_rpm_conf = miVehiculo.erpmM_tortuga;
+				break;
+			case Vehiculo_conejo:
+				miEstado.max_rpm_conf = miVehiculo.erpmM_conejo;
+				break;
+			}
 		}
 	}
 }
@@ -416,7 +428,6 @@ float getPWR(float input_pwr){
 			AppConf->app_adc_conf.throttle_exp,
 			AppConf->app_adc_conf.throttle_exp_brake,
 			AppConf->app_adc_conf.throttle_exp_mode);
-	if (pwr >0) commands_printf("\nPWR 3 = %f", (double) pwr);
 	timeout_reset();
 	static float pwr_ramp = 0.0;
 	float ramp_time = fabsf(pwr) > fabsf(pwr_ramp) ? AppConf->app_adc_conf.ramp_time_pos : AppConf->app_adc_conf.ramp_time_neg;
@@ -427,7 +438,6 @@ float getPWR(float input_pwr){
 		pwr = pwr_ramp;
 	}
 	/*************************************************************/
-	if (pwr >0) commands_printf("\nPWR 4 = %f", (double) pwr);
     // Algoritmo para un arranque seguro
 	if (fabsf(pwr) < 0.001) {
         miEstado.ms_without_power += (1000.0 * (float)miLoop.diff_time) / (float)CH_CFG_ST_FREQUENCY;
@@ -443,7 +453,10 @@ float getPWR(float input_pwr){
         pwr = 0;
         return (0);
     }
-    if (pwr >0) commands_printf("\nPWR 5 = %f", (double) pwr);
+
+    if (miEstado.tipoVehiculo == Yawer && !miEstado.sensorHombreMuerto) {
+    	pwr = 0;
+    }
 	return (pwr);
 }
 
@@ -471,7 +484,6 @@ static void driveVehicule(void){
 	switch(miEstado.estadoHombreMuerto){
 		case HM_FREE: {
 			float miPwr = getPWR(miEstado.pwr);
-			if (miPwr >0) commands_printf("\nPWR = %f", (double) miPwr);
 			float lo_max_rpm = 0.0;
 			float lo_min_rpm = 0.0;
 			// aplico los máximos a la corriente de salida en función de los límites de velocidad del modo seleccionado
@@ -510,18 +522,11 @@ static void driveVehicule(void){
 			 }
 			 miPwr = lo_max_rpm;
 		   } // En principio no hay límite a la máxima deceleración
-
-		   for (int i = 0;i < CAN_STATUS_MSGS_TO_STORE;i++) {
-			   can_status_msg *msg = comm_can_get_status_msg_index(i);
-			   if (msg->id >= 0 && UTILS_AGE_S(msg->rx_time) < MAX_CAN_AGE) {
-				 comm_can_set_current_rel(msg->id, miPwr);
-			   }
-		   }
 		   misParametros.motorMaster.current = miPwr;
 		   misParametros.motorSlave.current = miPwr;
 		   misParametros.current_max = miPwr;
 		   miDisplayComm.intensidad = 10*miPwr*mc_conf->lo_current_motor_max_now;
-		   mc_interface_set_current_rel(miPwr);
+		   set_curr_rel_both_motors(misParametros.motorMaster.current, misParametros.motorSlave.current);
 		   break;
 		}
 		case HM_BRAKING:
@@ -531,6 +536,7 @@ static void driveVehicule(void){
 		case HM_STOPPED:
 			break;
 		case HM_CONTROL_PID:
+			set_curr_rel_both_brakes(0 );
 			misParametros.motorMaster.current = compute_PID(
 					(PID_Type *)&(misParametros.frenoMaster),
 					misParametros.motorMaster.erpm,
@@ -542,6 +548,26 @@ static void driveVehicule(void){
 			misParametros.current_max = ( fabsf(misParametros.motorMaster.current)> \
 					fabsf(misParametros.motorSlave.current)) ? \
 							fabsf(misParametros.motorMaster.current) : fabsf(misParametros.motorSlave.current);
+
+			static uint contadorM = 0;
+			static uint contadorS = 0;
+			if ( (misParametros.motorMaster.erpm < -miVehiculo.min_rpm && misParametros.frenoMaster.i_term < 0) ||  (misParametros.motorMaster.erpm > miVehiculo.min_rpm && misParametros.frenoMaster.i_term > 0) ) {
+				contadorM++;
+				if (contadorM >= N_RESET_ITERM){
+					contadorM = 0;
+					misParametros.frenoMaster.i_term = 0;
+					misParametros.motorMaster.current = 0;
+				}
+			} else contadorM = 0;
+
+			if ( (misParametros.motorSlave.erpm < -miVehiculo.min_rpm && misParametros.frenoSlave.i_term < 0) ||  (misParametros.motorSlave.erpm > miVehiculo.min_rpm && misParametros.frenoSlave.i_term > 0) ) {
+				contadorS++;
+				if (contadorS >=N_RESET_ITERM){
+					misParametros.frenoSlave.i_term = 0;
+					misParametros.motorSlave.current = 0;
+				}
+			} else contadorS = 0;
+
 			set_curr_rel_both_motors(misParametros.motorMaster.current, misParametros.motorSlave.current);
 			break;
 	}
@@ -656,4 +682,26 @@ static void getInfo1(int argc, const char **argv) {
 	  commands_printf("\nvoltage_start: %f\tvoltage_end: %f",
 			  (double)  AppConf->app_adc_conf.voltage_start,
 			  (double) AppConf->app_adc_conf.voltage_end);
+
+	  commands_printf("\n*********************************   MASTER   ***********************************************");
+	  commands_printf("\nkp = %f\tki = %f\tkd = %f",
+			  (double) misParametros.frenoMaster.kp,
+			  (double) misParametros.frenoMaster.ki,
+			  (double) misParametros.frenoMaster.kd);
+
+	  commands_printf("\nP = %f\tkI = %f\tkD = %f",
+			  (double) misParametros.frenoMaster.p_term,
+			  (double) misParametros.frenoMaster.i_term,
+			  (double) misParametros.frenoMaster.d_term);
+
+	  commands_printf("\n*********************************   SLAVE   ***********************************************");
+	  commands_printf("\nkp = %f\tki = %f\tkd = %f",
+			  (double) misParametros.frenoSlave.kp,
+			  (double) misParametros.frenoSlave.ki,
+			  (double) misParametros.frenoSlave.kd);
+
+	  commands_printf("\nP = %f\tkI = %f\tkD = %f",
+			  (double) misParametros.frenoSlave.p_term,
+			  (double) misParametros.frenoSlave.i_term,
+			  (double) misParametros.frenoSlave.d_term);
 }
