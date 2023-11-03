@@ -14,8 +14,6 @@
 #include "ch.h"
 #include "hal.h"
 
-//#include "stm32f4xx_conf.h"
-// Some useful includes
 #include "mc_interface.h"
 #include "utils.h"
 #include "encoder/encoder.h"
@@ -39,7 +37,7 @@
 #define RPM_FILTER_SAMPLES					8
 #define TRUE_LEVEL_ADC							1.5
 #define ERPM_INFINITE								100000
-#define N_RESET_ITERM								50
+#define N_RESET_ITERM								200
 
 // Threads
 static THD_FUNCTION(mooevoThread, arg);
