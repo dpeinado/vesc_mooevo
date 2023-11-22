@@ -40,10 +40,10 @@
 #define DCCAL_OFF()
 #define IS_DRV_FAULT()			(!palReadPad(GPIOB, 7))
 
-#define LED_GREEN_ON()			palSetPad(GPIOB, 0)
-#define LED_GREEN_OFF()			palClearPad(GPIOB, 0)
-#define LED_RED_ON()			palSetPad(GPIOB, 1)
-#define LED_RED_OFF()			palClearPad(GPIOB, 1)
+#define LED_GREEN_ON()			palSetPad(GPIOB, 1)
+#define LED_GREEN_OFF()			palClearPad(GPIOB, 1)
+#define LED_RED_ON()			palSetPad(GPIOB, 0)
+#define LED_RED_OFF()			palClearPad(GPIOB, 0)
 
 #define CURRENT_FILTER_ON()		palSetPad(GPIOD, 2)
 #define CURRENT_FILTER_OFF()	palClearPad(GPIOD, 2)
@@ -91,12 +91,12 @@
 #define ADC_IND_CURR1						3
 #define ADC_IND_CURR2						4
 #define ADC_IND_CURR3						5
-#define ADC_IND_VIN_SENS				11
+#define ADC_IND_VIN_SENS					11
 #define ADC_IND_EXT							6
-#define ADC_IND_EXT2							7
-#define ADC_IND_TEMP_MOS				8
-#define ADC_IND_TEMP_MOTOR		9
-#define ADC_IND_VREFINT					12
+#define ADC_IND_EXT2						7
+#define ADC_IND_TEMP_MOS					8
+#define ADC_IND_TEMP_MOTOR					9
+#define ADC_IND_VREFINT						12
 #define ADC_IND_HM							10
 
 
