@@ -80,9 +80,11 @@ typedef struct {
 	HombreMuertoState estadoHombreMuerto;
 	float ms_without_power;
 	float pwr;
+	float decoded_pwr;
 	bool reversa;
 	bool freno;
 	bool sensorHombreMuerto;
+	bool estoyMuerto;
 	float max_rpm_conf;
 	float min_rpm_conf;
 } VehicleState; //miEstado

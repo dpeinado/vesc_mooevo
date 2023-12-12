@@ -31,13 +31,13 @@
 #include "mooevo_pid.h"
 #include "app_0_Mooevo.h"
 
-#define MAX_CAN_AGE								0.1
+#define MAX_CAN_AGE						0.1
 #define MIN_MS_WITHOUT_POWER			500
-#define FILTER_SAMPLES								5
-#define RPM_FILTER_SAMPLES					8
-#define TRUE_LEVEL_ADC							1.5
-#define ERPM_INFINITE								100000
-#define N_RESET_ITERM								200
+#define FILTER_SAMPLES					5
+#define RPM_FILTER_SAMPLES				8
+#define TRUE_LEVEL_ADC					1.5
+#define ERPM_INFINITE					100000
+#define N_RESET_ITERM					200
 
 // Threads
 static THD_FUNCTION(mooevoThread, arg);
@@ -46,6 +46,7 @@ static THD_WORKING_AREA(mooevoThread_wa, 1024);
 // Private functions
 static void getLoopTimes(int argc, const char **argv);
 static void getInfo1(int argc, const char **argv);
+float getPWR(float input_pwr);
 
 // Private variables
 static volatile bool stop_now = true;
@@ -126,32 +127,34 @@ void app_custom_configure(app_configuration *conf) {
 	/*
 	 * INICIALIZACIÓN CONFIGURACIÓN DEL VEHÍCULO: miVehiculo
 	 */
-	miVehiculo.tipoVehiculo  		= AppConf->app_adc_conf.ctrl_type;
-	miVehiculo.erpmM_25kph     = get_erpm_from_kph(25);
+	miVehiculo.tipoVehiculo  = AppConf->app_adc_conf.ctrl_type;
+	miVehiculo.erpmM_25kph   = get_erpm_from_kph(25);
 	miVehiculo.erpmM_andando = get_erpm_from_kph(AppConf->app_balance_conf.kp);
-	miVehiculo.erpmM_tortuga   = get_erpm_from_kph(AppConf->app_balance_conf.ki);
-	miVehiculo.erpmM_conejo		= get_erpm_from_kph(AppConf->app_balance_conf.kd);
-	miVehiculo.erpmM_m_atras 	= get_erpm_from_kph(1.5);
-	miVehiculo.max_omega			= AppConf->app_balance_conf.tiltback_constant_erpm;
-	miVehiculo.k_filter					= AppConf->app_balance_conf.tiltback_constant;
-	miVehiculo.omega_cut			= AppConf->app_balance_conf.tiltback_variable* miVehiculo.max_omega;
-	miVehiculo.min_curr				= AppConf->app_balance_conf.kd_pt1_highpass_frequency/10.0;
-	miVehiculo.min_rpm				= AppConf->app_balance_conf.kd_pt1_lowpass_frequency;
-	miVehiculo.brake_current		= AppConf->app_balance_conf.brake_current;
-	miVehiculo.brake_timeout		= AppConf->app_balance_conf.brake_timeout;
+	miVehiculo.erpmM_tortuga = get_erpm_from_kph(AppConf->app_balance_conf.ki);
+	miVehiculo.erpmM_conejo	 = get_erpm_from_kph(AppConf->app_balance_conf.kd);
+	miVehiculo.erpmM_m_atras = get_erpm_from_kph(1.5);
+	miVehiculo.max_omega	 = AppConf->app_balance_conf.tiltback_constant_erpm;
+	miVehiculo.k_filter		 = AppConf->app_balance_conf.tiltback_constant;
+	miVehiculo.omega_cut	 = AppConf->app_balance_conf.tiltback_variable* miVehiculo.max_omega;
+	miVehiculo.min_curr		 = AppConf->app_balance_conf.kd_pt1_highpass_frequency/10.0;
+	miVehiculo.min_rpm		 = AppConf->app_balance_conf.kd_pt1_lowpass_frequency;
+	miVehiculo.brake_current = AppConf->app_balance_conf.brake_current;
+	miVehiculo.brake_timeout = AppConf->app_balance_conf.brake_timeout;
 	/*
 	 * INICIALIZACIÓN DEL ESTADO LÓGICO DEL VEHÍCULO
 	 */
-	miEstado.tipoVehiculo = miVehiculo.tipoVehiculo;
-	miEstado.modoVehiculo = Sin_limites;
+	miEstado.tipoVehiculo 		= miVehiculo.tipoVehiculo;
+	miEstado.modoVehiculo 		= Sin_limites;
 	miEstado.estadoHombreMuerto = HM_FREE;
-	miEstado.ms_without_power = 0;
-	miEstado.pwr = 0;
-	miEstado.reversa = false;
-	miEstado.freno = false;
+	miEstado.ms_without_power 	= 0;
+	miEstado.pwr 				= 0;
+	miEstado.decoded_pwr		= 0;
+	miEstado.reversa 			= false;
+	miEstado.freno 				= false;
 	miEstado.sensorHombreMuerto = false;
-	miEstado.max_rpm_conf = miVehiculo.erpmM_25kph;
-	miEstado.min_rpm_conf = - miVehiculo.erpmM_25kph;
+	miEstado.estoyMuerto		= false;
+	miEstado.max_rpm_conf 		= miVehiculo.erpmM_25kph;
+	miEstado.min_rpm_conf 		= - miVehiculo.erpmM_25kph;
 	/*
 	 * INICIALIZACIÓN DE LOS PARÁMETROS DE ESTADO DEL VEHÍCULO
 	 */
@@ -243,7 +246,28 @@ static void updateExternalVariables(void){
 	miEstado.sensorHombreMuerto = (ADC_VOLTS(ADC_IND_HM)>=TRUE_LEVEL_ADC) ? true : false;
 	//miEstado.sensorHombreMuerto = ADC_VOLTS(ADC_IND_HM);
 	miEstado.modoVehiculo = miDisplayComm.modo;
+	miEstado.decoded_pwr = getPWR(miEstado.pwr);
+
+	if( (miEstado.tipoVehiculo == Walker_Clean) ||
+					(miEstado.tipoVehiculo==Carro_26 && miEstado.modoVehiculo==Andarin)){
+		/*if (miEstado.decoded_pwr>0){
+			commands_printf("\nTipo Vehiculo correcto, pwr = %.2f \t decoded_pwr = %.2f",
+					(double) miEstado.pwr,
+					(double) miEstado.decoded_pwr);
+			commands_printf("\nVol_start = %.2f\t Vol_center = %.2f\t Vol_end = %.2f",
+					(double) AppConf->app_adc_conf.voltage_start,
+					(double) AppConf->app_adc_conf.voltage_center,
+					(double) AppConf->app_adc_conf.voltage_end);
+		}*/
+		if (miEstado.decoded_pwr < 0.0) {
+			miEstado.estoyMuerto = true;
+			if (miEstado.sensorHombreMuerto) miEstado.estoyMuerto = false;
+		} else {
+			miEstado.estoyMuerto = false;
+		}
+	}
 }
+
 static void updateInternalVariables(void){
 	misParametros.motorMaster.erpm_last = misParametros.motorMaster.erpm;
 	misParametros.motorSlave.erpm_last = misParametros.motorSlave.erpm;
@@ -274,9 +298,7 @@ static void updateInternalVariables(void){
     misParametros.abs_max_rpm = (fabsf(misParametros.motorMaster.erpm) > fabsf(misParametros.motorSlave.erpm)) ?
     		fabsf(misParametros.motorMaster.erpm) : fabsf(misParametros.motorSlave.erpm);
     miDisplayComm.velocidad = 10*get_kph_from_erpm(misParametros.rpm_avg);
-
 }
-
 
 static void stateTransition(void){
 	switch(miEstado.tipoVehiculo){
@@ -294,7 +316,7 @@ static void stateTransition(void){
 			miEstado.modoVehiculo = miDisplayComm.modo;
 			break;
 	}
-	if (!miEstado.sensorHombreMuerto) {
+	if (miEstado.estoyMuerto) {
 		if( (miEstado.tipoVehiculo == Walker_Clean) ||
 				(miEstado.tipoVehiculo==Carro_26 && miEstado.modoVehiculo==Andarin)){
 			switch(miEstado.estadoHombreMuerto){
@@ -344,7 +366,6 @@ static void stateTransition(void){
 			miEstado.ms_without_power = 0;
 			commands_printf("ME RESETEEEOOOO");
 		}
-
 	}
 	if (miEstado.reversa){
 		miEstado.max_rpm_conf = 0;
@@ -404,10 +425,15 @@ float getPWR(float input_pwr){
 	if (AppConf->app_adc_conf.use_filter) {
 		pwr = filter_val;
 	}
-	// se mapea la entrada desde voltios al intervalo 0 - 1
-	pwr = utils_map(pwr, AppConf->app_adc_conf.voltage_start, AppConf->app_adc_conf.voltage_end, 0.0, 1.0);
-	//utils_truncate_number(&pwr, 0.0, 1.0);
-
+	// Mapear respecto del centro del acelerador
+    if (pwr < AppConf->app_adc_conf.voltage_center) {
+        pwr = utils_map(pwr, AppConf->app_adc_conf.voltage_start,
+        		AppConf->app_adc_conf.voltage_center, 0.0, 0.5);
+    } else {
+        pwr = utils_map(pwr, AppConf->app_adc_conf.voltage_center,
+        		AppConf->app_adc_conf.voltage_end, 0.5, 1.0);
+    }
+	utils_truncate_number(&pwr, 0.0, 1.0);
 
 	if (AppConf->app_adc_conf.voltage_inverted) {
 		pwr = 1.0 - pwr;
@@ -419,7 +445,13 @@ float getPWR(float input_pwr){
 	} else {
 	  palClearPad(HW_ICU_GPIO, HW_ICU_PIN); // apaga alarma marcha atrás
 	}
-
+	// TODO AQUI HAY QUE DISCRIMINAR QUIÉN TIENE HOMBRE MUERTO Y *=2 y -=1
+	if( (miEstado.tipoVehiculo == Walker_Clean) ||
+						(miEstado.tipoVehiculo==Carro_26 && miEstado.modoVehiculo==Andarin)){
+		// Escalar el voltaje y poner posición central en 0
+		pwr *=2;
+		pwr -=1;
+	}
 	// se aplican la banda muerta y la curva de aceleraci�n/deceleraci�n
 	utils_deadband(&pwr, AppConf->app_adc_conf.hyst, 1.0);
 	pwr = utils_throttle_curve(pwr,
@@ -427,6 +459,7 @@ float getPWR(float input_pwr){
 			AppConf->app_adc_conf.throttle_exp_brake,
 			AppConf->app_adc_conf.throttle_exp_mode);
 	timeout_reset();
+
 	static float pwr_ramp = 0.0;
 	float ramp_time = fabsf(pwr) > fabsf(pwr_ramp) ? AppConf->app_adc_conf.ramp_time_pos : AppConf->app_adc_conf.ramp_time_neg;
 
@@ -435,6 +468,7 @@ float getPWR(float input_pwr){
 		utils_step_towards(&pwr_ramp, pwr, ramp_step);
 		pwr = pwr_ramp;
 	}
+
 	/*************************************************************/
     // Algoritmo para un arranque seguro
 	if (fabsf(pwr) < 0.001) {
@@ -442,16 +476,14 @@ float getPWR(float input_pwr){
     }
 	timeout_reset();
     // If safe start is enabled and the output has not been zero for long enough
-    if (miEstado.ms_without_power < MIN_MS_WITHOUT_POWER && AppConf->app_adc_conf.safe_start) {
+    /*if (miEstado.ms_without_power < MIN_MS_WITHOUT_POWER && AppConf->app_adc_conf.safe_start) {
     	static int pulses_without_power_before = 0;
     	if (miEstado.ms_without_power == pulses_without_power_before) {
     		miEstado.ms_without_power = 0;
     	}
         pulses_without_power_before = miEstado.ms_without_power;
         pwr = 0;
-        return (0);
-    }
-
+    }*/
     if (miEstado.tipoVehiculo == Yawer && !miEstado.sensorHombreMuerto) {
     	pwr = 0;
     }
@@ -481,7 +513,7 @@ void set_curr_rel_both_motors(float rel_curr1, float rel_curr2){
 static void driveVehicule(void){
 	switch(miEstado.estadoHombreMuerto){
 		case HM_FREE: {
-			float miPwr = getPWR(miEstado.pwr);
+			float miPwr = miEstado.decoded_pwr;
 			float lo_max_rpm = 0.0;
 			float lo_min_rpm = 0.0;
 			// aplico los máximos a la corriente de salida en función de los límites de velocidad del modo seleccionado
