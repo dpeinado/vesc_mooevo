@@ -261,7 +261,10 @@ static void updateExternalVariables(void){
 		}*/
 		if (miEstado.decoded_pwr < 0.0) {
 			miEstado.estoyMuerto = true;
-			if (miEstado.sensorHombreMuerto) miEstado.estoyMuerto = false;
+			if (miEstado.sensorHombreMuerto) {
+				miEstado.estoyMuerto = false;
+				miEstado.decoded_pwr = 0.0;
+			}
 		} else {
 			miEstado.estoyMuerto = false;
 		}
@@ -446,8 +449,9 @@ float getPWR(float input_pwr){
 	  palClearPad(HW_ICU_GPIO, HW_ICU_PIN); // apaga alarma marcha atrás
 	}
 	// TODO AQUI HAY QUE DISCRIMINAR QUIÉN TIENE HOMBRE MUERTO Y *=2 y -=1
-	if( (miEstado.tipoVehiculo == Walker_Clean) ||
-						(miEstado.tipoVehiculo==Carro_26 && miEstado.modoVehiculo==Andarin)){
+	if( ( (miEstado.tipoVehiculo == Walker_Clean) ||
+						(miEstado.tipoVehiculo==Carro_26 && miEstado.modoVehiculo==Andarin)) &&
+								!miEstado.sensorHombreMuerto) {
 		// Escalar el voltaje y poner posición central en 0
 		pwr *=2;
 		pwr -=1;
@@ -674,7 +678,7 @@ static void getInfo1(int argc, const char **argv) {
 	  }
 	  commands_printf("\nTipo vehículo = %s\t Modo Vehículo = %s", mensaje1, mensaje2);
 	  float mswp = miEstado.ms_without_power;
-	  float miPwr = miEstado.pwr;
+	  float miPwr = miEstado.decoded_pwr;
 	  bool mireversa = miEstado.reversa;
 	  bool mifreno = miEstado.freno;
 	  bool miSHM = miEstado.sensorHombreMuerto;
